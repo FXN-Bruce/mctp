@@ -10,6 +10,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 1. `mctp-client` binary now handles the `cxl-cci` MCTP message type
 
+2. The meson build infrastructure now provides install tags for separate
+   installation of utils, mctpd, and debug tools (with the debug tools now being
+   installable). This is all controlable through the `meson install --tags`
+   facility.
+
+   To support this, the minimum meson version has been bumped to 0.60,
+   previously 0.59.
+
 ### Fixes
 
 1. In v2.6. we lost the peer initial MTU sematics, which gave us a safe minimum
