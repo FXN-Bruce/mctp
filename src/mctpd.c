@@ -1330,6 +1330,61 @@ handle_control_endpoint_discovery(struct ctx *ctx, int sd,
 	return reply_message_phys(ctx, sd, resp, sizeof(*resp), addr);
 }
 
+/* Handles an incoming Discovery Notify (DSP0236 command 0x0D): a device
+ * telling us, as bus owner, that it wants (re)discovery. The message
+ * carries no payload beyond the header - all we learn is the sender's
+ * physical address. Acks the message and relays it as a D-Bus signal on
+ * the sender's interface object; deciding what to do about it is left to
+ * whatever is listening for that signal, since only the bus-owner policy
+ * layer knows how to reconcile or debounce it.
+ */
+static int handle_control_discovery_notify(struct ctx *ctx, int sd,
+					   const struct sockaddr_mctp_ext *addr,
+					   const uint8_t *buf,
+					   const size_t buf_size)
+{
+	struct mctp_ctrl_cmd_discovery_notify *req = NULL;
+	struct mctp_ctrl_resp_discovery_notify respi = { 0 }, *resp = &respi;
+	const char *ifname;
+	char *path = NULL;
+	int rc;
+
+	if (buf_size < sizeof(*req)) {
+		warnx("short Discovery Notify message");
+		return -ENOMSG;
+	}
+	req = (void *)buf;
+
+	/* Acknowledge immediately using physical addressing, since the
+	 * sender may not have a valid EID yet. */
+	mctp_ctrl_msg_hdr_init_resp(&respi.ctrl_hdr, req->ctrl_hdr);
+	resp->completion_code = MCTP_CTRL_CC_SUCCESS;
+	rc = reply_message_phys(ctx, sd, resp, sizeof(respi), addr);
+	if (rc < 0)
+		warnx("Failed replying to Discovery Notify from %s: %s",
+		      ext_addr_tostr(addr), strerror(-rc));
+
+	ifname = mctp_nl_if_byindex(ctx->nl, addr->smctp_ifindex);
+	if (!ifname) {
+		warnx("No interface found for Discovery Notify from %s",
+		      ext_addr_tostr(addr));
+		return 0;
+	}
+
+	rc = asprintf(&path, "%s/%s", MCTP_DBUS_PATH_LINKS, ifname);
+	if (rc < 0)
+		return 0;
+
+	rc = sd_bus_emit_signal(ctx->bus, path, CC_MCTP_DBUS_IFACE_BUSOWNER,
+				"DiscoveryNotify", NULL);
+	if (rc < 0)
+		warnx("Failed to emit DiscoveryNotify signal for %s: %s",
+		      ifname, strerror(-rc));
+	free(path);
+
+	return 0;
+}
+
 static int handle_control_unsupported(struct ctx *ctx, int sd,
 				      const struct sockaddr_mctp_ext *addr,
 				      const uint8_t *buf, const size_t buf_size)
@@ -1423,6 +1478,10 @@ static int cb_listen_control_msg(sd_event_source *s, int sd, uint32_t revents,
 	case MCTP_CTRL_CMD_ENDPOINT_DISCOVERY:
 		rc = handle_control_endpoint_discovery(ctx, sd, &addr, buf,
 						       buf_size);
+		break;
+	case MCTP_CTRL_CMD_DISCOVERY_NOTIFY:
+		rc = handle_control_discovery_notify(ctx, sd, &addr, buf,
+						     buf_size);
 		break;
 	default:
 		if (ctx->verbose) {
@@ -4330,6 +4389,8 @@ static const sd_bus_vtable bus_link_owner_vtable[] = {
 		SD_BUS_PARAM(found),
 		method_learn_endpoint,
 		0),
+
+	SD_BUS_SIGNAL("DiscoveryNotify", "", 0),
 	SD_BUS_VTABLE_END,
 
 };
