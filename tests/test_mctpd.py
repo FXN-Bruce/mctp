@@ -641,6 +641,48 @@ async def test_get_endpoint_id(dbus, mctpd, routed_ep):
     assert rsp[3] == mctpd.system.addresses[0].eid
 
 
+async def test_discovery_notify(dbus, mctpd, routed_ep):
+    """mctpd acks Discovery Notify and relays it as a DiscoveryNotify
+    signal on the sending interface's BusOwner1 object
+    """
+    ep = routed_ep
+    iface = mctpd.system.interfaces[0]
+
+    mctp = await mctpd_mctp_iface_obj(dbus, iface)
+
+    notified = trio.Semaphore(initial_value=0)
+
+    def discovery_notify():
+        notified.release()
+
+    await mctp.on_discovery_notify(discovery_notify)
+
+    cmd = MCTPControlCommand(True, 0, 0x0D)
+    rsp = await ep.send_control(mctpd.network.mctp_socket, cmd)
+
+    # command code
+    assert rsp[1] == 0x0D
+    # completion code indicates success
+    assert rsp[2] == 0x00
+
+    with trio.move_on_after(2) as expected:
+        await notified.acquire()
+    assert not expected.cancelled_caught
+
+
+async def test_discovery_notify_no_eid(mctpd):
+    """Discovery Notify is acked using physical addressing, even from a
+    peer with no assigned EID yet
+    """
+    peer = mctpd.network.endpoints[0]
+
+    cmd = MCTPControlCommand(True, 0, 0x0D)
+    rsp = await peer.send_control(mctpd.network.mctp_socket, cmd)
+
+    assert rsp[1] == 0x0D
+    assert rsp[2] == 0x00
+
+
 async def test_response_iid(mctpd):
     """Test that instance ID is populated correctly on control protocol
     responses
